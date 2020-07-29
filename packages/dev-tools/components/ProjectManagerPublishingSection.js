@@ -1,13 +1,12 @@
-import styled, { css } from 'react-emotion';
-
-import * as React from 'react';
 import * as Constants from 'app/common/constants';
 import * as Strings from 'app/common/strings';
 import * as SVG from 'app/common/svg';
-
 import InputWithLabel from 'app/components/InputWithLabel';
-import TextareaWithLabel from 'app/components/TextareaWithLabel';
 import PrimaryButtonWithStates from 'app/components/PrimaryButtonWithStates';
+import SettingsControl from 'app/components/SettingsControl';
+import TextareaWithLabel from 'app/components/TextareaWithLabel';
+import * as React from 'react';
+import { css } from 'react-emotion';
 
 const STYLES_HEADING_WITH_DISMISS = css`
   display: flex;
@@ -63,14 +62,6 @@ const STYLES_PARAGRAPH = css`
   width: 100%;
 `;
 
-const STYLES_SMALL_PARAGRAPH = css`
-  font-family: ${Constants.fontFamilies.regular};
-  max-width: ${Constants.breakpoints.medium}px;
-  font-size: 12px;
-  line-height: 1.5;
-  width: 100%;
-`;
-
 const STYLES_EMPHASIS = css`
   color: ${Constants.colors.green};
 `;
@@ -87,10 +78,22 @@ const STYLES_CANCEL = css`
   cursor: pointer;
 `;
 
+const STYLES_TOGGLE = css`
+  max-width: ${Constants.breakpoints.smallSidebar}px;
+  margin-bottom: 24px;
+`;
+
+const STYLES_SETTINGS_CONTROL = css`
+  font-family: ${Constants.fontFamilies.mono};
+  color: ${Constants.colors.darkBorder};
+  font-size: 10px;
+`;
+
 // TODO(jim): Controls for privacy.
 export default class ProjectManagerPublishingSection extends React.Component {
   state = {
     isPublishing: false,
+    optimize: true,
     config: getConfigFromProps(this.props),
     errors: {},
   };
@@ -121,7 +124,7 @@ export default class ProjectManagerPublishingSection extends React.Component {
   _handleChangeSlug = e => {
     const value = e.target.value;
     this.setState(state => {
-      let slug = Strings.slugify(value);
+      const slug = Strings.slugify(value);
       return {
         config: {
           ...state.config,
@@ -175,6 +178,12 @@ export default class ProjectManagerPublishingSection extends React.Component {
     });
   };
 
+  _handleOptimizeToggle = () => {
+    this.setState(state => ({
+      optimize: !state.optimize,
+    }));
+  };
+
   _handleCancel = () => {
     this.props.onUpdateState({
       isPublishing: false,
@@ -187,6 +196,7 @@ export default class ProjectManagerPublishingSection extends React.Component {
     });
     await this.props.onPublish({
       config: this.state.config,
+      optimize: this.state.optimize,
     });
   };
 
@@ -262,7 +272,14 @@ export default class ProjectManagerPublishingSection extends React.Component {
           onChange={this._handleChangeDescription}
         />
 
+        <div className={STYLES_TOGGLE}>
+          <SettingsControl onClick={this._handleOptimizeToggle} isActive={this.state.optimize}>
+            <span className={STYLES_SETTINGS_CONTROL}>Optimize Assets</span>
+          </SettingsControl>
+        </div>
+
         <h2 className={STYLES_HEADING}>Confirm changes</h2>
+
         <p className={STYLES_PARAGRAPH}>
           Once you publish your project, you will be able to view it at&nbsp;
           <span className={STYLES_EMPHASIS}>

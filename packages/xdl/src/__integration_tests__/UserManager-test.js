@@ -1,19 +1,12 @@
-/**
- * @flow
- */
-
 import fs from 'fs-extra';
-import path from 'path';
 import HashIds from 'hashids';
+import path from 'path';
 import uuid from 'uuid';
+
 import ApiV2Client from '../ApiV2';
 import { UserManagerInstance } from '../User';
 
-const XDL_TEST_CLIENT_ID = 'o0YygTgKhOTdoWj10Yl9nY2P0SMTw38Y';
-
-import type { User } from '../User';
-
-const _makeShortId = (salt: string, minLength: number = 10): string => {
+const _makeShortId = (salt, minLength = 10) => {
   const hashIds = new HashIds(salt, minLength);
   return hashIds.encode(Date.now());
 };
@@ -102,7 +95,6 @@ describe('UserManager', () => {
 
     // Spy on getProfileAsync
     const _getProfileSpy = jest.fn(UserManager._getProfileAsync);
-    // $FlowFixMe
     UserManager._getProfileAsync = _getProfileSpy;
 
     await UserManager.getCurrentUserAsync();
@@ -121,13 +113,12 @@ describe('UserManager', () => {
 
     // Spy on getProfileAsync
     const _getProfileSpy = jest.fn(UserManager._getProfileAsync);
-    // $FlowFixMe
     UserManager._getProfileAsync = _getProfileSpy;
 
-    const users = ((await Promise.all([
+    const users = await Promise.all([
       UserManager.getCurrentUserAsync(),
       UserManager.getCurrentUserAsync(),
-    ]): any): Array<User>);
+    ]);
 
     expect(_getProfileSpy).toHaveBeenCalledTimes(1);
 

@@ -2,30 +2,36 @@
 require 'bundler/setup'
 
 PACKAGE_NAME = "traveling-fastlane"
-VERSION = "1.6.2"
+VERSION = "1.15.1"
 TRAVELING_RUBY_VERSION = "20150715-2.2.2"
 JSON_VERSION = '1.8.2'
 UNF_VERSION = '0.0.6'
+CA_CERT_URL = 'https://curl.haxx.se/ca/cacert.pem' # from cURL
 
 # Be sure to add the name of a script here when you add it to actions
 SCRIPTS = [
-  'fetch_cert',
-  'fetch_push_cert',
-  'fetch_new_provisioning_profile',
-  'app_management',
-  'validate_apple_credentials',
-  'funcs',
-  'preload',
   'app_produce',
+  'authenticate',
+  'ensure_app_exists',
+  'funcs',
+  'list_devices',
+  'manage_ad_hoc_provisioning_profile',
+  'manage_dist_certs',
+  'manage_provisioning_profiles',
+  'manage_push_keys',
   'pilot_upload',
+  'preload',
+  'resolve_itc_team_id',
   'supply_android',
 ]
 
 desc "Package your app"
-task :package => ['package:linux:x86_64', 'package:osx']
+task :package => ['clean', 'package:linux:x86_64', 'package:osx']
 
 task :clean do
-  sh "rm -rf #{PACKAGE_NAME}-#{VERSION}-osx #{PACKAGE_NAME}-#{VERSION}-linux-x86_64 *.gz"
+  sh "rm -rf #{PACKAGE_NAME}-*-osx #{PACKAGE_NAME}-*-linux-x86_64 *.gz"
+  sh "rm -rf publishing/darwin/dist"
+  sh "rm -rf publishing/linux/dist"
 end
 
 namespace :package do
@@ -64,6 +70,7 @@ namespace :package do
     sh "rm -rf packaging/tmp"
     sh "rm -f packaging/vendor/*/*/cache/*"
     sh "rm -rf packaging/vendor/ruby/*/extensions"
+
     sh "find packaging/vendor/ruby/*/gems -name '*.so' | xargs rm -f"
     sh "find packaging/vendor/ruby/*/gems -name '*.bundle' | xargs rm -f"
     sh "find packaging/vendor/ruby/*/gems -name '*.o' | xargs rm -f"
@@ -111,6 +118,11 @@ def create_package target
   end
   sh "mkdir #{package_dir}/lib/ruby"
   sh "tar -xzf packaging/traveling-ruby-#{TRAVELING_RUBY_VERSION}-#{target}.tar.gz -C #{package_dir}/lib/ruby"
+
+  # Hack to replace traveling ruby's expired ca-bundle.crt with cURL's most recent one
+  # TODO: Remove this when https://github.com/phusion/traveling-ruby/pull/102 lands upstream and we upgrade from traveling ruby version 20150715-2.2.2
+  sh "curl -o #{package_dir}/lib/ruby/lib/ca-bundle.crt #{CA_CERT_URL}"
+
   for script in SCRIPTS do
     if script != 'funcs' && script != 'preload'
       sh "cp wrappers/#{script}_wrapper.sh #{package_dir}/#{script}"
@@ -125,9 +137,9 @@ def create_package target
   # https://github.com/phusion/traveling-ruby/issues/38
   sh "mv #{package_dir}/lib/ruby/lib/restore_environment.rb #{package_dir}/lib/ruby/lib/ruby/site_ruby/"
   sh <<-eos
-    sed -i '' -e 's|RUBYOPT=\\\\"-r$ROOT/lib/restore_environment\\\\"|RUBYOPT=\\\\"-rrestore_environment\\\\"|' #{package_dir}/lib/ruby/bin/ruby_environment
-    sed -i '' -e 's|GEM_HOME="\\(.*\\)"|GEM_HOME=\\\\"\\1\\\\"|' #{package_dir}/lib/ruby/bin/ruby_environment
-    sed -i '' -e 's|GEM_PATH="\\(.*\\)"|GEM_PATH=\\\\"\\1\\\\"|' #{package_dir}/lib/ruby/bin/ruby_environment
+    sed -i.bak -e 's|RUBYOPT=\\\\"-r$ROOT/lib/restore_environment\\\\"|RUBYOPT=\\\\"-rrestore_environment\\\\"|' #{package_dir}/lib/ruby/bin/ruby_environment
+    sed -i.bak -e 's|GEM_HOME="\\(.*\\)"|GEM_HOME=\\\\"\\1\\\\"|' #{package_dir}/lib/ruby/bin/ruby_environment
+    sed -i.bak -e 's|GEM_PATH="\\(.*\\)"|GEM_PATH=\\\\"\\1\\\\"|' #{package_dir}/lib/ruby/bin/ruby_environment
   eos
 
   # Put in our native dependencies rather than the one provided by bundle
@@ -137,11 +149,15 @@ def create_package target
   end
 
   if target == "osx"
-    sh "cp -R #{PACKAGE_NAME}-#{VERSION}-osx publishing/darwin"
-    sh "cd publishing/darwin; npm publish --access=public; rm -rf #{PACKAGE_NAME}-#{VERSION}-osx"
+    sh "mv #{PACKAGE_NAME}-#{VERSION}-osx publishing/darwin/dist"
+    if !ENV['NO_PUBLISH']
+      sh "cd publishing/darwin; npm publish --access=public -timeout=9999999"
+    end
   else
-    sh "cp -R #{PACKAGE_NAME}-#{VERSION}-linux-x86_64 publishing/linux"
-    sh "cd publishing/linux; npm publish --access=public; rm -rf #{PACKAGE_NAME}-#{VERSION}-linux-x86_64"
+    sh "mv #{PACKAGE_NAME}-#{VERSION}-linux-x86_64 publishing/linux/dist"
+    if !ENV['NO_PUBLISH']
+      sh "cd publishing/linux; npm publish --access=public -timeout=9999999"
+    end
   end
 end
 

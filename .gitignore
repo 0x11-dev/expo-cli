@@ -9,3 +9,9 @@ node_modules
 *.log
 .vscode
 .idea/*
+*.swp
+*.swo
+*.tsbuildinfo
+.history
+
+coverage/

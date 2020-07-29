@@ -1,10 +1,10 @@
 'use strict';
 
-let extend = require('extend');
+const extend = require('extend');
 
 function asyncCallback(cb) {
-  return function() {
-    setImmediate(() => cb.apply(this, arguments));
+  return function (...args) {
+    setImmediate(() => cb.apply(this, args));
   };
 }
 

@@ -1,24 +1,16 @@
-// Copyright 2015-present 650 Industries. All rights reserved.
-/**
- * @flow
- */
-
-'use strict';
-
 import fs from 'fs-extra';
+import { sync as globSync } from 'glob';
 import path from 'path';
 import replaceString from 'replace-string';
-import _ from 'lodash';
-import globby from 'globby';
 import uuid from 'uuid';
 
 import { createAndWriteIconsToPathAsync } from './AndroidIcons';
+import renderIntentFilters from './AndroidIntentFilters';
 import * as AssetBundle from './AssetBundle';
 import * as ExponentTools from './ExponentTools';
+import logger from './Logger';
 import StandaloneBuildFlags from './StandaloneBuildFlags';
 import StandaloneContext from './StandaloneContext';
-import renderIntentFilters from './AndroidIntentFilters';
-import logger from './Logger';
 
 const {
   getManifestAsync,
@@ -44,28 +36,28 @@ function exponentDirectory(workingDir) {
 }
 
 function xmlWeirdAndroidEscape(original) {
-  let noAmps = replaceString(original, '&', '&amp;');
-  let noLt = replaceString(noAmps, '<', '&lt;');
-  let noGt = replaceString(noLt, '>', '&gt;');
-  let noApos = replaceString(noGt, '"', '\\"');
+  const noAmps = replaceString(original, '&', '&amp;');
+  const noLt = replaceString(noAmps, '<', '&lt;');
+  const noGt = replaceString(noLt, '>', '&gt;');
+  const noApos = replaceString(noGt, '"', '\\"');
   return replaceString(noApos, "'", "\\'");
 }
 
-exports.updateAndroidShellAppAsync = async function updateAndroidShellAppAsync(args: any) {
+exports.updateAndroidShellAppAsync = async function updateAndroidShellAppAsync(args) {
   let { url, sdkVersion, releaseChannel, workingDir } = args;
 
   releaseChannel = releaseChannel ? releaseChannel : 'default';
-  let manifest = await getManifestAsync(url, {
+  const manifest = await getManifestAsync(url, {
     'Exponent-SDK-Version': sdkVersion,
     'Exponent-Platform': 'android',
     'Expo-Release-Channel': releaseChannel,
     Accept: 'application/expo+json,application/json',
   });
 
-  let fullManifestUrl = url.replace('exp://', 'https://');
-  let bundleUrl = manifest.bundleUrl;
+  const fullManifestUrl = url.replace('exp://', 'https://');
+  const bundleUrl = manifest.bundleUrl;
 
-  let shellPath = path.join(exponentDirectory(workingDir), 'android-shell-app');
+  const shellPath = path.join(exponentDirectory(workingDir), 'android-shell-app');
 
   await fs.remove(path.join(shellPath, 'app', 'src', 'main', 'assets', 'shell-app-manifest.json'));
   await fs.writeFileSync(
@@ -79,8 +71,8 @@ exports.updateAndroidShellAppAsync = async function updateAndroidShellAppAsync(a
   );
 
   await deleteLinesInFileAsync(
-    `START\ EMBEDDED\ RESPONSES`,
-    `END\ EMBEDDED\ RESPONSES`,
+    `START EMBEDDED RESPONSES`,
+    `END EMBEDDED RESPONSES`,
     path.join(
       shellPath,
       'app',
@@ -135,42 +127,36 @@ exports.updateAndroidShellAppAsync = async function updateAndroidShellAppAsync(a
   );
 };
 
-function getRemoteOrLocalUrl(manifest, key, isDetached) {
-  // in detached apps, `manifest` is actually just app.json, so there are no remote url fields
-  // we should return a local url starting with file:// instead
-  if (isDetached) {
-    return _.get(manifest, key);
-  }
-  return _.get(manifest, `${key}Url`);
-}
-
 function backgroundImagesForApp(shellPath, manifest, isDetached) {
   // returns an array like:
   // [
   //   {url: 'urlToDownload', path: 'pathToSaveTo'},
   //   {url: 'anotherURlToDownload', path: 'anotherPathToSaveTo'},
   // ]
-  let basePath = path.join(shellPath, 'app', 'src', 'main', 'res');
-  if (_.get(manifest, 'android.splash')) {
-    var splash = _.get(manifest, 'android.splash');
-    return _.reduce(
-      imageKeys,
-      function(acc, imageKey) {
-        let url = getRemoteOrLocalUrl(splash, imageKey, isDetached);
-        if (url) {
-          acc.push({
-            url,
-            path: path.join(basePath, `drawable-${imageKey}`, 'shell_launch_background_image.png'),
-          });
-        }
+  const basePath = path.join(shellPath, 'app', 'src', 'main', 'res');
+  const splash = manifest && manifest.android && manifest.android.splash;
+  if (splash) {
+    const results = imageKeys.reduce(function (acc, imageKey) {
+      const url = isDetached ? splash[imageKey] : splash[`${imageKey}Url`];
+      if (url) {
+        acc.push({
+          url,
+          path: path.join(basePath, `drawable-${imageKey}`, 'shell_launch_background_image.png'),
+        });
+      }
 
-        return acc;
-      },
-      []
-    );
+      return acc;
+    }, []);
+
+    // No splash screen images declared in 'android.splash' configuration, proceed to general one
+    if (results.length !== 0) {
+      return results;
+    }
   }
 
-  let url = getRemoteOrLocalUrl(manifest, 'splash.image', isDetached);
+  const url = isDetached
+    ? manifest.splash && manifest.splash.image
+    : manifest.splash && manifest.splash.imageUrl;
   if (url) {
     return [
       {
@@ -199,40 +185,29 @@ function getSplashScreenBackgroundColor(manifest) {
 }
 
 /*
-  if resizeMode is 'cover' we should show LoadingView:
-  using an ImageView, unlike having a BitmapDrawable
-  provides a fullscreen image without distortions
+  if resizeMode is 'contain' or 'cover' (since SDK33) or 'cover' (prior to SDK33) we should show LoadingView
+  that is presenting splash image in ImageView what allows full control over image sizing unlike
+  ImageDrawable that is provided by Android native splash screen API
 */
-function shouldShowLoadingView(manifest) {
+function shouldShowLoadingView(manifest, sdkVersion) {
+  const resizeMode =
+    (manifest.android && manifest.android.splash && manifest.android.splash.resizeMode) ||
+    (manifest.splash && manifest.splash.resizeMode);
+
   return (
-    (manifest.android &&
-      manifest.android.splash &&
-      manifest.android.splash.resizeMode &&
-      manifest.android.splash.resizeMode === 'cover') ||
-    (manifest.splash && manifest.splash.resizeMode && manifest.splash.resizeMode === 'cover')
+    resizeMode &&
+    (parseSdkMajorVersion(sdkVersion) >= 33
+      ? resizeMode === 'contain' || resizeMode === 'cover'
+      : resizeMode === 'cover')
   );
 }
 
 export async function copyInitialShellAppFilesAsync(
   androidSrcPath,
   shellPath,
-  isDetached: boolean,
-  sdkVersion: ?string
+  isDetached,
+  sdkVersion
 ) {
-  if (androidSrcPath && !isDetached) {
-    // check if Android template files exist
-    // since we take out the prebuild step later on
-    // and we should have generated those files earlier
-    await spawnAsyncThrowError('../../tools-public/check-dynamic-macros-android.sh', [], {
-      pipeToLogger: true,
-      loggerFields: { buildPhase: 'confirming that dynamic macros exist' },
-      cwd: path.join(androidSrcPath, 'app'),
-      env: process.env,
-    });
-  }
-
-  const initialCopyLogger = logger.withFields({ buildPhase: 'copying initial shell app files' });
-
   const copyToShellApp = async fileName => {
     try {
       await fs.copy(path.join(androidSrcPath, fileName), path.join(shellPath, fileName));
@@ -275,7 +250,7 @@ export async function copyInitialShellAppFilesAsync(
   }
 }
 
-exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(args: any) {
+exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(args) {
   let {
     url,
     sdkVersion,
@@ -288,11 +263,15 @@ exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(a
     keyPassword,
     outputFile,
     workingDir,
+    modules,
+    buildType,
+    buildMode,
+    gradleArgs,
   } = args;
 
   const exponentDir = exponentDirectory(workingDir);
-  let androidSrcPath = path.join(exponentDir, 'android');
-  let shellPath = path.join(exponentDir, 'android-shell-app');
+  const androidSrcPath = path.join(exponentDir, 'android');
+  const shellPath = path.join(exponentDir, 'android-shell-app');
 
   await fs.remove(shellPath);
   await fs.ensureDir(shellPath);
@@ -317,7 +296,7 @@ exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(a
 
   let privateConfig;
   if (privateConfigFile) {
-    let privateConfigContents = await fs.readFile(privateConfigFile, 'utf8');
+    const privateConfigContents = await fs.readFile(privateConfigFile, 'utf8');
     privateConfig = JSON.parse(privateConfigContents);
   } else if (manifest.android) {
     privateConfig = manifest.android.config;
@@ -334,8 +313,8 @@ exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(a
     };
   }
 
-  let buildFlags = StandaloneBuildFlags.createAndroid(configuration, androidBuildConfiguration);
-  let context = StandaloneContext.createServiceContext(
+  const buildFlags = StandaloneBuildFlags.createAndroid(configuration, androidBuildConfiguration);
+  const context = StandaloneContext.createServiceContext(
     androidSrcPath,
     null,
     manifest,
@@ -348,14 +327,15 @@ exports.createAndroidShellAppAsync = async function createAndroidShellAppAsync(a
 
   await copyInitialShellAppFilesAsync(androidSrcPath, shellPath, false, sdkVersion);
   await removeObsoleteSdks(shellPath, sdkVersion);
-  await runShellAppModificationsAsync(context, sdkVersion);
+  await runShellAppModificationsAsync(context, sdkVersion, buildMode);
+  await prepareEnabledModules(shellPath, modules);
 
   if (!args.skipBuild) {
-    await buildShellAppAsync(context, sdkVersion);
+    await buildShellAppAsync(context, sdkVersion, buildType, buildMode, gradleArgs);
   }
 };
 
-function shellPathForContext(context: StandaloneContext) {
+function shellPathForContext(context) {
   if (context.type === 'user') {
     return path.join(context.data.projectPath, 'android');
   } else {
@@ -368,29 +348,43 @@ function shellPathForContext(context: StandaloneContext) {
   }
 }
 
-export async function runShellAppModificationsAsync(
-  context: StandaloneContext,
-  sdkVersion: ?string
-) {
+/**
+ *  Resolve the private config for a project.
+ *  For standalone apps, this is copied into a separate context field context.data.privateConfig
+ *  by the turtle builder. For a local project, this is available in app.json under android.config.
+ */
+function getPrivateConfig(context) {
+  if (context.data.privateConfig) {
+    return context.data.privateConfig;
+  } else {
+    const exp = context.data.exp;
+    if (exp && exp.android) {
+      return exp.android.config;
+    }
+  }
+}
+
+export async function runShellAppModificationsAsync(context, sdkVersion, buildMode) {
   const fnLogger = logger.withFields({ buildPhase: 'running shell app modifications' });
 
-  let shellPath = shellPathForContext(context);
-  let url: string = context.published.url;
-  let manifest = context.config; // manifest or app.json
-  let releaseChannel = context.published.releaseChannel;
+  const shellPath = shellPathForContext(context);
+  const url = context.published.url;
+  const manifest = context.config; // manifest or app.json
+  const releaseChannel = context.published.releaseChannel;
 
   const isRunningInUserContext = context.type === 'user';
   // In SDK32 we've unified build process for shell and ejected apps
   const isDetached = ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32 || isRunningInUserContext;
 
-  if (!context.data.privateConfig) {
+  const privateConfig = getPrivateConfig(context);
+  if (!privateConfig) {
     fnLogger.info('No config file specified.');
   }
 
-  let fullManifestUrl = url.replace('exp://', 'https://');
+  const fullManifestUrl = url.replace('exp://', 'https://');
 
   let versionCode = 1;
-  let javaPackage = manifest.android.package;
+  const javaPackage = manifest.android.package;
   if (manifest.android.versionCode) {
     versionCode = manifest.android.versionCode;
   }
@@ -401,14 +395,14 @@ export async function runShellAppModificationsAsync(
     );
   }
 
-  let name = manifest.name;
-  let scheme = manifest.scheme || (manifest.detach && manifest.detach.scheme);
-  let bundleUrl: ?string = manifest.bundleUrl;
-  let isFullManifest = !!bundleUrl;
-  let version = manifest.version ? manifest.version : '0.0.0';
-  let backgroundImages = backgroundImagesForApp(shellPath, manifest, isRunningInUserContext);
-  let splashBackgroundColor = getSplashScreenBackgroundColor(manifest);
-  let updatesDisabled = manifest.updates && manifest.updates.enabled === false;
+  const name = manifest.name;
+  const scheme = manifest.scheme || (manifest.detach && manifest.detach.scheme);
+  const bundleUrl = manifest.bundleUrl;
+  const isFullManifest = !!bundleUrl;
+  const version = manifest.version ? manifest.version : '0.0.0';
+  const backgroundImages = backgroundImagesForApp(shellPath, manifest, isRunningInUserContext);
+  const splashBackgroundColor = getSplashScreenBackgroundColor(manifest);
+  const updatesDisabled = manifest.updates && manifest.updates.enabled === false;
 
   // Clean build directories
   await fs.remove(path.join(shellPath, 'app', 'build'));
@@ -418,7 +412,16 @@ export async function runShellAppModificationsAsync(
   await fs.remove(path.join(shellPath, 'app', 'src', 'androidTest'));
 
   if (isDetached) {
-    let appBuildGradle = path.join(shellPath, 'app', 'build.gradle');
+    const appBuildGradle = path.join(shellPath, 'app', 'build.gradle');
+    if (isRunningInUserContext) {
+      await regexFileAsync(/\/\* UNCOMMENT WHEN DETACHING/g, '', appBuildGradle);
+      await regexFileAsync(/END UNCOMMENT WHEN DETACHING \*\//g, '', appBuildGradle);
+      await deleteLinesInFileAsync(
+        'WHEN_DETACHING_REMOVE_FROM_HERE',
+        'WHEN_DETACHING_REMOVE_TO_HERE',
+        appBuildGradle
+      );
+    }
     await regexFileAsync(/\/\* UNCOMMENT WHEN DISTRIBUTING/g, '', appBuildGradle);
     await regexFileAsync(/END UNCOMMENT WHEN DISTRIBUTING \*\//g, '', appBuildGradle);
     await deleteLinesInFileAsync(
@@ -427,9 +430,18 @@ export async function runShellAppModificationsAsync(
       appBuildGradle
     );
 
-    // Don't need to compile expoview or ReactAndroid
-    // react-native link looks for a \n so we need that. See https://github.com/facebook/react-native/blob/master/local-cli/link/android/patches/makeSettingsPatch.js
-    await fs.writeFile(path.join(shellPath, 'settings.gradle'), `include ':app'\n`);
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+      const settingsGradle = path.join(shellPath, 'settings.gradle');
+      await deleteLinesInFileAsync(
+        'WHEN_DISTRIBUTING_REMOVE_FROM_HERE',
+        'WHEN_DISTRIBUTING_REMOVE_TO_HERE',
+        settingsGradle
+      );
+    } else {
+      // Don't need to compile expoview or ReactAndroid
+      // react-native link looks for a \n so we need that. See https://github.com/facebook/react-native/blob/master/local-cli/link/android/patches/makeSettingsPatch.js
+      await fs.writeFile(path.join(shellPath, 'settings.gradle'), `include ':app'\n`);
+    }
 
     await regexFileAsync(
       'TEMPLATE_INITIAL_URL',
@@ -467,11 +479,9 @@ export async function runShellAppModificationsAsync(
   );
 
   // Versions
-  let buildGradleFile = await fs.readFileSync(path.join(shellPath, 'app', 'build.gradle'), 'utf8');
-  let androidVersion = buildGradleFile.match(/versionName '(\S+)'/)[1];
   await regexFileAsync(
     'VERSION_NAME = null',
-    `VERSION_NAME = "${androidVersion}"`,
+    `VERSION_NAME = "${version}"`,
     path.join(
       shellPath,
       'app',
@@ -486,8 +496,8 @@ export async function runShellAppModificationsAsync(
     )
   );
   await deleteLinesInFileAsync(
-    `BEGIN\ VERSIONS`,
-    `END\ VERSIONS`,
+    `BEGIN VERSIONS`,
+    `END VERSIONS`,
     path.join(shellPath, 'app', 'build.gradle')
   );
   await regexFileAsync(
@@ -512,13 +522,6 @@ export async function runShellAppModificationsAsync(
     `javaMaxHeapSize "6g"`,
     path.join(shellPath, 'app', 'build.gradle')
   );
-
-  // Push notifications
-  await regexFileAsync(
-    '"package_name": "host.exp.exponent"',
-    `"package_name": "${javaPackage}"`,
-    path.join(shellPath, 'app', 'google-services.json')
-  ); // TODO: actually use the correct file
 
   // TODO: probably don't need this in both places
   await regexFileAsync(
@@ -570,7 +573,9 @@ export async function runShellAppModificationsAsync(
       )
     );
   }
-  if (shouldShowLoadingView(manifest)) {
+
+  // Handle 'contain' and 'cover' splashScreen mode by showing only background color and then actual splashScreen image inside AppLoadingView
+  if (shouldShowLoadingView(manifest, sdkVersion)) {
     await regexFileAsync(
       'SHOW_LOADING_VIEW_IN_SHELL_APP = false',
       'SHOW_LOADING_VIEW_IN_SHELL_APP = true',
@@ -587,7 +592,15 @@ export async function runShellAppModificationsAsync(
         'AppConstants.java'
       )
     );
+
+    // show only background color if LoadingView will appear
+    await regexFileAsync(
+      /<item>.*<\/item>/,
+      '',
+      path.join(shellPath, 'app', 'src', 'main', 'res', 'drawable', 'splash_background.xml')
+    );
   }
+
   // In SDK32 this field got removed from AppConstants
   if (parseSdkMajorVersion(sdkVersion) < 32 && isRunningInUserContext) {
     await regexFileAsync(
@@ -640,15 +653,6 @@ export async function runShellAppModificationsAsync(
     path.join(shellPath, 'app', 'src', 'main', 'res', 'values', 'colors.xml')
   );
 
-  // show only background color if LoadingView will appear
-  if (shouldShowLoadingView(manifest)) {
-    await regexFileAsync(
-      /<item>.*<\/item>/,
-      '',
-      path.join(shellPath, 'app', 'src', 'main', 'res', 'drawable', 'splash_background.xml')
-    );
-  }
-
   // Change stripe schemes and add meta-data
   const randomID = uuid.v4();
   const newScheme = `<meta-data android:name="standaloneStripeScheme" android:value="${randomID}" />`;
@@ -667,15 +671,15 @@ export async function runShellAppModificationsAsync(
 
   // Remove exp:// scheme from LauncherActivity
   await deleteLinesInFileAsync(
-    `START\ LAUNCHER\ INTENT\ FILTERS`,
-    `END\ LAUNCHER\ INTENT\ FILTERS`,
+    `START LAUNCHER INTENT FILTERS`,
+    `END LAUNCHER INTENT FILTERS`,
     path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
   );
 
   // Remove LAUNCHER category from HomeActivity
   await deleteLinesInFileAsync(
-    `START\ HOME\ INTENT\ FILTERS`,
-    `END\ HOME\ INTENT\ FILTERS`,
+    `START HOME INTENT FILTERS`,
+    `END HOME INTENT FILTERS`,
     path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
   );
 
@@ -704,7 +708,7 @@ export async function runShellAppModificationsAsync(
   }
 
   // Add app-specific intent filters
-  const intentFilters = _.get(manifest, 'android.intentFilters');
+  const intentFilters = manifest.android.intentFilters;
   if (intentFilters) {
     if (isDetached) {
       await regexFileAsync(
@@ -722,14 +726,17 @@ export async function runShellAppModificationsAsync(
   }
 
   // Add shell app scheme
-  if (scheme) {
+  const schemes = [scheme].filter(e => e);
+  if (schemes.length > 0) {
     const searchLine = isDetached
       ? '<!-- ADD DETACH SCHEME HERE -->'
       : '<!-- ADD SHELL SCHEME HERE -->';
+    const schemesTags = schemes.map(scheme => `<data android:scheme="${scheme}"/>`).join(`
+    `);
     await regexFileAsync(
       searchLine,
       `<intent-filter>
-        <data android:scheme="${scheme}"/>
+        ${schemesTags}
 
         <action android:name="android.intent.action.VIEW"/>
 
@@ -739,23 +746,25 @@ export async function runShellAppModificationsAsync(
       path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
     );
   }
+  // Add Facebook app scheme
+  if (manifest.facebookScheme) {
+    await regexFileAsync(
+      '<!-- REPLACE WITH FACEBOOK SCHEME -->',
+      `<data android:scheme="${manifest.facebookScheme}" />`,
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
+
+  if (manifest.android && manifest.android.allowBackup === false) {
+    await regexFileAsync(
+      `android:allowBackup="true"`,
+      `android:allowBackup="false"`,
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
 
   // Add permissions
   if (manifest.android && manifest.android.permissions) {
-    const content = await fs.readFileSync(
-      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml'),
-      'utf-8'
-    );
-
-    // Get the list of optional permissions form manifest
-    const permissions = content
-      .replace(
-        /(([\s\S]*<!-- BEGIN OPTIONAL PERMISSIONS -->)|(<!-- END OPTIONAL PERMISSIONS -->[\s\S]*))/g,
-        ''
-      )
-      .match(/android:name=".+"/g)
-      .map(p => p.replace(/(android:name=|")/g, ''));
-
     const whitelist = [];
 
     manifest.android.permissions.forEach(s => {
@@ -798,8 +807,8 @@ export async function runShellAppModificationsAsync(
     ].filter(p => !whitelist.includes(p));
 
     await deleteLinesInFileAsync(
-      `BEGIN\ OPTIONAL\ PERMISSIONS`,
-      `END\ OPTIONAL\ PERMISSIONS`,
+      `BEGIN OPTIONAL PERMISSIONS`,
+      `END OPTIONAL PERMISSIONS`,
       path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
     );
 
@@ -881,10 +890,10 @@ export async function runShellAppModificationsAsync(
   // Splash Background
   if (backgroundImages && backgroundImages.length > 0) {
     // Delete the placeholder images
-    (await globby(['**/shell_launch_background_image.png'], {
+    globSync('**/shell_launch_background_image.png', {
       cwd: path.join(shellPath, 'app', 'src', 'main', 'res'),
       absolute: true,
-    })).forEach(filePath => {
+    }).forEach(filePath => {
       fs.removeSync(filePath);
     });
 
@@ -908,12 +917,13 @@ export async function runShellAppModificationsAsync(
 
   let certificateHash = '';
   let googleAndroidApiKey = '';
-  let privateConfig = context.data.privateConfig;
   if (privateConfig) {
-    let branch = privateConfig.branch;
-    let fabric = privateConfig.fabric;
-    let googleMaps = privateConfig.googleMaps;
-    let googleSignIn = privateConfig.googleSignIn;
+    const branch = privateConfig.branch;
+    const fabric = privateConfig.fabric;
+    const googleMaps = privateConfig.googleMaps;
+    const googleSignIn = privateConfig.googleSignIn;
+    const googleMobileAdsAppId = privateConfig.googleMobileAdsAppId;
+    const googleMobileAdsAutoInit = privateConfig.googleMobileAdsAutoInit;
 
     // Branch
     if (branch) {
@@ -927,18 +937,21 @@ export async function runShellAppModificationsAsync(
     }
 
     // Fabric
+    // Delete existing Fabric API key.
+    await deleteLinesInFileAsync(
+      `BEGIN FABRIC CONFIG`,
+      `END FABRIC CONFIG`,
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+    await fs.remove(path.join(shellPath, 'app', 'fabric.properties'));
+
     if (fabric) {
-      await fs.remove(path.join(shellPath, 'app', 'fabric.properties'));
+      // Put user's Fabric key if provided.
       await fs.writeFileSync(
         path.join(shellPath, 'app', 'fabric.properties'),
         `apiSecret=${fabric.buildSecret}\n`
       );
 
-      await deleteLinesInFileAsync(
-        `BEGIN\ FABRIC\ CONFIG`,
-        `END\ FABRIC\ CONFIG`,
-        path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
-      );
       await regexFileAsync(
         '<!-- ADD FABRIC CONFIG HERE -->',
         `<meta-data
@@ -949,17 +962,50 @@ export async function runShellAppModificationsAsync(
     }
 
     // Google Maps
+    // Delete existing Google Maps API key.
+    await deleteLinesInFileAsync(
+      `BEGIN GOOGLE MAPS CONFIG`,
+      `END GOOGLE MAPS CONFIG`,
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+
     if (googleMaps) {
-      await deleteLinesInFileAsync(
-        `BEGIN\ GOOGLE\ MAPS\ CONFIG`,
-        `END\ GOOGLE\ MAPS\ CONFIG`,
-        path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
-      );
+      // Put user's Google Maps API key if provided.
       await regexFileAsync(
         '<!-- ADD GOOGLE MAPS CONFIG HERE -->',
         `<meta-data
       android:name="com.google.android.geo.API_KEY"
       android:value="${googleMaps.apiKey}"/>`,
+        path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+      );
+    }
+
+    // Google Mobile Ads App ID
+    // The app crashes if the app ID isn't provided, so if the user
+    // doesn't provide the ID, we leave the sample one.
+    if (googleMobileAdsAppId) {
+      // Delete existing Google Mobile Ads App ID.
+      await deleteLinesInFileAsync(
+        `BEGIN GOOGLE MOBILE ADS CONFIG`,
+        `END GOOGLE MOBILE ADS CONFIG`,
+        path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+      );
+      // Put user's Google Mobile Ads App ID if provided.
+      await regexFileAsync(
+        '<!-- ADD GOOGLE MOBILE ADS CONFIG HERE -->',
+        `<meta-data
+      android:name="com.google.android.gms.ads.APPLICATION_ID"
+      android:value="${googleMobileAdsAppId}"/>`,
+        path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+      );
+    }
+
+    // Auto-init of Google App Measurement
+    // unless the user explicitly specifies they want to auto-init, we leave delay set to true
+    if (googleMobileAdsAutoInit) {
+      await regexFileAsync(
+        '<meta-data android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT" android:value="true"/>',
+        '<meta-data android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT" android:value="false"/>',
         path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
       );
     }
@@ -1004,36 +1050,241 @@ export async function runShellAppModificationsAsync(
     );
   }
 
-  // Google sign in
-  await regexFileAsync(
-    /"current_key": "(.*?)"/,
-    `"current_key": "${googleAndroidApiKey}"`,
-    path.join(shellPath, 'app', 'google-services.json')
-  );
-  await regexFileAsync(
-    /"certificate_hash": "(.*?)"/,
-    `"certificate_hash": "${certificateHash}"`,
-    path.join(shellPath, 'app', 'google-services.json')
-  );
+  // Configure google-services.json
+  // It is either already in the shell app (placeholder or real one) or it has been added
+  // from `manifest.android.googleServicesFile`.
+  if (parseSdkMajorVersion(sdkVersion) >= 37) {
+    // New behavior - googleServicesFile overrides googleSignIn configuration
+    if (!manifest.android || !manifest.android.googleServicesFile) {
+      // No google-services.json file, let's use the placeholder one
+      // and insert keys manually ("the old way").
+
+      // This seems like something we can't really get away without:
+      //
+      // 1. A project with google-services plugin won't build without
+      //    a google-services.json file (the plugin makes sure to fail the build).
+      // 2. Adding the google-services plugin conditionally and properly (to be able
+      //    to build a project without that file) is too much hassle.
+      //
+      // So, let's use `host.exp.exponent` as a placeholder for the project's
+      // javaPackage. In custom shell apps there shouldn't ever be "host.exp.exponent"
+      // so this shouldn't cause any problems for advanced users.
+      await regexFileAsync(
+        '"package_name": "host.exp.exponent"',
+        `"package_name": "${javaPackage}"`,
+        path.join(shellPath, 'app', 'google-services.json')
+      );
+
+      // Let's not modify values of the original google-services.json file
+      // if they haven't been provided (in which case, googleAndroidApiKey
+      // and certificateHash will be an empty string). This will make sure
+      // we don't modify shell app's google-services needlessly.
+
+      // Google sign in
+      if (googleAndroidApiKey) {
+        await regexFileAsync(
+          /"current_key": "(.*?)"/,
+          `"current_key": "${googleAndroidApiKey}"`,
+          path.join(shellPath, 'app', 'google-services.json')
+        );
+      }
+      if (certificateHash) {
+        await regexFileAsync(
+          /"certificate_hash": "(.*?)"/,
+          `"certificate_hash": "${certificateHash}"`,
+          path.join(shellPath, 'app', 'google-services.json')
+        );
+      }
+    } else if (googleAndroidApiKey || certificateHash) {
+      // Both googleServicesFile and googleSignIn configuration have been provided.
+      // Let's print a helpful warning and not modify google-services.json.
+      fnLogger.warn(
+        'You have provided values for both `googleServicesFile` and `googleSignIn` in your `app.json`. Since SDK37 `googleServicesFile` overrides any other `google-services.json`-related configuration. Recommended way to fix this warning is to remove `googleSignIn` configuration from your `app.json` in favor of using only `googleServicesFile` to configure Google services.'
+      );
+    }
+  } else {
+    // Old behavior - googleSignIn overrides googleServicesFile
+
+    if (manifest.android && manifest.android.googleServicesFile) {
+      // googleServicesFile provided, let's warn the user that its contents
+      // are about to be modified.
+      fnLogger.warn(
+        'You have provided a custom `googleServicesFile` in your `app.json`. In projects below SDK37 `googleServicesFile` contents will be overridden with `googleSignIn` configuration. (Even if there is none, in which case the API key from `google-services.json` will be removed.) To mitigate this behavior upgrade to SDK37 or check out https://github.com/expo/expo/issues/7727#issuecomment-611544439 for a workaround.'
+      );
+    }
+
+    // Push notifications
+    await regexFileAsync(
+      '"package_name": "host.exp.exponent"',
+      `"package_name": "${javaPackage}"`,
+      path.join(shellPath, 'app', 'google-services.json')
+    );
+
+    // Google sign in
+    await regexFileAsync(
+      /"current_key": "(.*?)"/,
+      `"current_key": "${googleAndroidApiKey}"`,
+      path.join(shellPath, 'app', 'google-services.json')
+    );
+    await regexFileAsync(
+      /"certificate_hash": "(.*?)"/,
+      `"certificate_hash": "${certificateHash}"`,
+      path.join(shellPath, 'app', 'google-services.json')
+    );
+  }
+
+  // Set manifest url for debug mode
+  if (buildMode === 'debug') {
+    await regexFileAsync(
+      'DEVELOPMENT_URL = ""',
+      `DEVELOPMENT_URL = "${fullManifestUrl}"`,
+      path.join(
+        shellPath,
+        'app',
+        'src',
+        'main',
+        'java',
+        'host',
+        'exp',
+        'exponent',
+        'generated',
+        'DetachBuildConstants.java'
+      )
+    );
+  }
+
+  // Facebook configuration
+
+  // There's no such pattern to replace in shell apps below SDK 36,
+  // so this will not have any effect on these apps.
+  if (manifest.facebookAppId) {
+    await regexFileAsync(
+      '<!-- ADD FACEBOOK APP ID CONFIG HERE -->',
+      `<meta-data android:name="com.facebook.sdk.ApplicationId" android:value="${manifest.facebookAppId}"/>`,
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
+  // There's no such pattern to replace in shell apps below SDK 36,
+  // so this will not have any effect on these apps.
+  if (manifest.facebookDisplayName) {
+    await regexFileAsync(
+      '<!-- ADD FACEBOOK APP DISPLAY NAME CONFIG HERE -->',
+      `<meta-data android:name="com.facebook.sdk.ApplicationName" android:value="${manifest.facebookDisplayName}"/>`,
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
+  // There's no such pattern to replace in shell apps below SDK 36,
+  // so this will not have any effect on these apps.
+  if (manifest.facebookAutoInitEnabled) {
+    await regexFileAsync(
+      '<meta-data android:name="com.facebook.sdk.AutoInitEnabled" android:value="false"/>',
+      '<meta-data android:name="com.facebook.sdk.AutoInitEnabled" android:value="true"/>',
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
+  // There's no such pattern to replace in shell apps below SDK 36,
+  // so this will not have any effect on these apps.
+  if (manifest.facebookAutoLogAppEventsEnabled) {
+    await regexFileAsync(
+      '<meta-data android:name="com.facebook.sdk.AutoLogAppEventsEnabled" android:value="false"/>',
+      '<meta-data android:name="com.facebook.sdk.AutoLogAppEventsEnabled" android:value="true"/>',
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
+  // There's no such pattern to replace in shell apps below SDK 36,
+  // so this will not have any effect on these apps.
+  if (manifest.facebookAdvertiserIDCollectionEnabled) {
+    await regexFileAsync(
+      '<meta-data android:name="com.facebook.sdk.AdvertiserIDCollectionEnabled" android:value="false"/>',
+      '<meta-data android:name="com.facebook.sdk.AdvertiserIDCollectionEnabled" android:value="true"/>',
+      path.join(shellPath, 'app', 'src', 'main', 'AndroidManifest.xml')
+    );
+  }
 }
 
-async function buildShellAppAsync(context: StandaloneContext, sdkVersion: string) {
-  let shellPath = shellPathForContext(context);
+async function buildShellAppAsync(
+  context,
+  sdkVersion,
+  buildType,
+  buildMode,
+  userProvidedGradleArgs
+) {
+  const shellPath = shellPathForContext(context);
+  const ext = buildType === 'app-bundle' ? 'aab' : 'apk';
 
-  if (context.build.android) {
-    let androidBuildConfiguration = context.build.android;
+  const isRelease = !!context.build.android && buildMode === 'release';
+  // concat on those strings is not very readable, but only alternative here is huge if statement
+  const debugOrRelease = isRelease ? 'Release' : 'Debug';
+  const devOrProd = isRelease ? 'Prod' : 'Dev';
+  const debugOrReleaseL = isRelease ? 'release' : 'debug';
+  const devOrProdL = isRelease ? 'prod' : 'dev';
 
-    try {
-      await fs.remove(`shell-unaligned.apk`);
-      await fs.remove(`shell.apk`);
-    } catch (e) {}
-    let gradleBuildCommand;
-    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
-      gradleBuildCommand = 'assembleProdKernelRelease';
+  const shellFile = `shell.${ext}`;
+  const shellUnalignedFile = `shell-unaligned.${ext}`;
+
+  const outputDirPath = path.join(
+    shellPath,
+    'app',
+    'build',
+    'outputs',
+    buildType === 'app-bundle' ? 'bundle' : 'apk'
+  );
+
+  let gradleBuildCommand;
+  let outputPath;
+  if (buildType === 'app-bundle') {
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 36) {
+      gradleBuildCommand = `:app:bundle${debugOrRelease}`;
+      outputPath = path.join(outputDirPath, debugOrReleaseL, `app-${debugOrReleaseL}.aab`);
+    } else if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+      gradleBuildCommand = `:app:bundle${debugOrRelease}`;
+      outputPath = path.join(outputDirPath, debugOrReleaseL, `app.aab`);
+    } else if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
+      gradleBuildCommand = `:app:bundle${devOrProd}Kernel${debugOrRelease}`;
+      outputPath = path.join(outputDirPath, `${devOrProdL}Kernel${debugOrRelease}`, `app.aab`);
     } else {
-      gradleBuildCommand = 'assembleProdMinSdkProdKernelRelease';
+      // gradleBuildCommand = `:app:bundle${devOrProd}MinSdk${devOrProd}Kernel${debugOrRelease}`;
+      // outputPath = path.join(
+      //   outputDirPath,
+      //   `${devOrProdL}MinSdk${devOrProd}Kernel`,
+      //   debugOrReleaseL,
+      //   `app.aab`
+      // );
+
+      // TODO (wkozyra95) debug building app bundles for sdk 31 and older
+      // for now it has low priority
+      throw new Error('Android App Bundles are not supported for sdk31 and lower');
     }
-    const gradleArgs = [gradleBuildCommand];
+  } else {
+    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 33) {
+      gradleBuildCommand = `:app:assemble${debugOrRelease}`;
+      outputPath = path.join(outputDirPath, debugOrReleaseL, `app-${debugOrReleaseL}.apk`);
+    } else if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
+      gradleBuildCommand = `:app:assemble${devOrProd}Kernel${debugOrRelease}`;
+      outputPath = path.join(
+        outputDirPath,
+        `${devOrProdL}Kernel`,
+        debugOrReleaseL,
+        `app-${devOrProdL}Kernel-${debugOrReleaseL}.apk`
+      );
+    } else {
+      gradleBuildCommand = `:app:assemble${devOrProd}MinSdk${devOrProd}Kernel${debugOrRelease}`;
+      outputPath = path.join(
+        outputDirPath,
+        `${devOrProdL}MinSdk${devOrProd}Kernel`,
+        debugOrReleaseL,
+        `app-${devOrProdL}MinSdk-${devOrProdL}Kernel-${debugOrReleaseL}-unsigned.apk`
+      );
+    }
+  }
+
+  await ExponentTools.removeIfExists(shellUnalignedFile);
+  await ExponentTools.removeIfExists(shellFile);
+  await ExponentTools.removeIfExists(outputPath);
+  if (isRelease) {
+    const androidBuildConfiguration = context.build.android;
+
+    const gradleArgs = [...(userProvidedGradleArgs || []), gradleBuildCommand];
     if (process.env.GRADLE_DAEMON_DISABLED) {
       gradleArgs.unshift('--no-daemon');
     }
@@ -1048,40 +1299,26 @@ async function buildShellAppAsync(context: StandaloneContext, sdkVersion: string
         ANDROID_KEYSTORE_PATH: androidBuildConfiguration.keystore,
         ANDROID_KEYSTORE_PASSWORD: androidBuildConfiguration.keystorePassword,
       },
+      loggerLineTransformer: line => {
+        if (!line) {
+          return null;
+        } else if (line.match(/^\.+$/)) {
+          return null;
+        } else {
+          return line;
+        }
+      },
     });
+
     if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
-      await fs.copy(
-        path.join(
-          shellPath,
-          'app',
-          'build',
-          'outputs',
-          'apk',
-          'prodKernel',
-          'release',
-          'app-prodKernel-release.apk'
-        ),
-        'shell.apk'
-      );
+      await fs.copy(outputPath, shellFile);
       // -c means "only verify"
-      await spawnAsync(`zipalign`, ['-c', '-v', '4', 'shell.apk'], {
+      await spawnAsync(`zipalign`, ['-c', '-v', '4', shellFile], {
         pipeToLogger: true,
         loggerFields: { buildPhase: 'verifying apk alignment' },
       });
     } else {
-      await fs.copy(
-        path.join(
-          shellPath,
-          'app',
-          'build',
-          'outputs',
-          'apk',
-          'prodMinSdkProdKernel',
-          'release',
-          'app-prodMinSdk-prodKernel-release-unsigned.apk'
-        ),
-        `shell-unaligned.apk`
-      );
+      await fs.copy(outputPath, shellUnalignedFile);
       await spawnAsync(
         `jarsigner`,
         [
@@ -1096,7 +1333,7 @@ async function buildShellAppAsync(context: StandaloneContext, sdkVersion: string
           androidBuildConfiguration.keyPassword,
           '-keystore',
           androidBuildConfiguration.keystore,
-          'shell-unaligned.apk',
+          shellUnalignedFile,
           androidBuildConfiguration.keyAlias,
         ],
         {
@@ -1104,80 +1341,44 @@ async function buildShellAppAsync(context: StandaloneContext, sdkVersion: string
           loggerFields: { buildPhase: 'signing created apk' },
         }
       );
-      await spawnAsync(`zipalign`, ['-v', '4', 'shell-unaligned.apk', 'shell.apk'], {
+      await spawnAsync(`zipalign`, ['-v', '4', shellUnalignedFile, shellFile], {
         pipeToLogger: true,
         loggerFields: { buildPhase: 'verifying apk alignment' },
       });
-      try {
-        await fs.remove('shell-unaligned.apk');
-      } catch (e) {}
+      await ExponentTools.removeIfExists(shellUnalignedFile);
     }
     await spawnAsync(
       `jarsigner`,
-      [
-        '-verify',
-        '-verbose',
-        '-certs',
-        '-keystore',
-        androidBuildConfiguration.keystore,
-        'shell.apk',
-      ],
+      ['-verify', '-verbose', '-certs', '-keystore', androidBuildConfiguration.keystore, shellFile],
       {
         pipeToLogger: true,
         loggerFields: { buildPhase: 'verifying apk' },
       }
     );
-    await fs.copy('shell.apk', androidBuildConfiguration.outputFile || '/tmp/shell-signed.apk');
+    await fs.copy(shellFile, androidBuildConfiguration.outputFile || `/tmp/shell-signed.${ext}`);
+    await ExponentTools.removeIfExists(shellFile);
   } else {
-    try {
-      await fs.remove('shell-debug.apk');
-    } catch (e) {}
-    let gradleBuildCommand;
-    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
-      gradleBuildCommand = 'assembleDevKernelDebug';
-    } else {
-      gradleBuildCommand = 'assembleDevMinSdkDevKernelDebug';
-    }
     await spawnAsyncThrowError(`./gradlew`, [gradleBuildCommand], {
       pipeToLogger: true,
       loggerFields: { buildPhase: 'running gradle' },
       cwd: shellPath,
     });
-    let apkPath;
-    if (ExponentTools.parseSdkMajorVersion(sdkVersion) >= 32) {
-      apkPath = path.join(
-        shellPath,
-        'app',
-        'build',
-        'outputs',
-        'apk',
-        'devKernel',
-        'debug',
-        'app-devKernel-debug.apk'
-      );
-    } else {
-      apkPath = path.join(
-        shellPath,
-        'app',
-        'build',
-        'outputs',
-        'apk',
-        'devMinSdkDevKernel',
-        'debug',
-        'app-devMinSdk-devKernel-debug.apk'
-      );
-    }
-    await fs.copy(apkPath, `/tmp/shell-debug.apk`);
+    await fs.copy(
+      outputPath,
+      (context.build && context.build.android && context.build.android.outputFile) ||
+        `/tmp/shell-debug.${ext}`
+    );
+    await ExponentTools.removeIfExists(outputPath);
   }
 }
 
-export function addDetachedConfigToExp(exp: Object, context: StandaloneContext): Object {
+export function addDetachedConfigToExp(exp, context) {
   if (context.type !== 'user') {
     console.warn(`Tried to modify exp for a non-user StandaloneContext, ignoring`);
     return exp;
   }
-  let shellPath = shellPathForContext(context);
-  let assetsDirectory = path.join(shellPath, 'app', 'src', 'main', 'assets');
+  const shellPath = shellPathForContext(context);
+  const assetsDirectory = path.join(shellPath, 'app', 'src', 'main', 'assets');
   exp.android.publishBundlePath = path.relative(
     context.data.projectPath,
     path.join(assetsDirectory, 'shell-app.bundle')
@@ -1249,12 +1450,14 @@ const removeInvalidSdkLinesWhenPreparingShell = async (majorSdkVersion, filePath
   );
 };
 
-async function removeObsoleteSdks(shellPath: string, requiredSdkVersion: string) {
+async function removeObsoleteSdks(shellPath, requiredSdkVersion) {
   const filePathsToTransform = {
     // Remove obsolete `expoview-abiXX_X_X` dependencies
     appBuildGradle: path.join(shellPath, 'app/build.gradle'),
     // Remove obsolete `host.exp.exponent:reactandroid:XX.X.X` dependencies from expoview
     expoviewBuildGradle: path.join(shellPath, 'expoview/build.gradle'),
+    // Remove obsolete includeUnimodulesProjects
+    settingsBuildGradle: path.join(shellPath, 'settings.gradle'),
     // Remove no-longer-valid interfaces from MultipleVersionReactNativeActivity
     multipleVersionReactNativeActivity: path.join(
       shellPath,
@@ -1286,4 +1489,23 @@ async function removeObsoleteSdks(shellPath: string, requiredSdkVersion: string)
       removeInvalidSdkLinesWhenPreparingShell(effectiveSdkVersion, filePath)
     )
   );
+}
+
+async function prepareEnabledModules(shellPath, modules) {
+  const enabledModulesDir = path.join(shellPath, 'enabled-modules');
+  const packagesDir = path.join(shellPath, '..', 'packages');
+  await fs.remove(enabledModulesDir);
+  if (!modules) {
+    await fs.ensureSymlink(packagesDir, enabledModulesDir);
+  } else {
+    await fs.mkdirp(enabledModulesDir);
+    await Promise.all(
+      modules.map(mod =>
+        fs.ensureSymlink(
+          path.join(packagesDir, mod.dirname),
+          path.join(enabledModulesDir, mod.dirname)
+        )
+      )
+    );
+  }
 }

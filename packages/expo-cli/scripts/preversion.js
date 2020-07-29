@@ -1,6 +1,6 @@
-let { bold } = require('chalk');
-let boxen = require('boxen');
-let inquirer = require('inquirer');
+const boxen = require('boxen');
+const { bold } = require('chalk');
+const inquirer = require('inquirer');
 
 console.log(
   boxen(bold("Please complete these checks before publishing the 'expo-cli' package:"), {
@@ -29,10 +29,8 @@ ${bold('3) Eject')}: Create an app and eject it immediately. Check that it build
 
     # Test that it builds for Android
     cd ../android
-    ./run.sh`
+    ./gradlew installDevKernelDebug`
 );
-
-let CHECKLIST = ['I have completed all the checks'];
 
 inquirer
   .prompt({

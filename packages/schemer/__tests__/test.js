@@ -1,6 +1,7 @@
+/* eslint-disable import/order */
+
+import { ErrorCodes } from '../src/Error';
 import Schemer from '../src/index';
-import { pathToSchema, pathToSchemaPath, schemaPointerToPath } from '../src/Util';
-import { SchemerError, ValidationError, ErrorCodes } from '../src/Error.js';
 
 describe('Sanity Tests', () => {
   it('is a class', () => {
@@ -37,7 +38,7 @@ describe('Holistic Unit Test', () => {
     } catch (e) {
       console.log(e);
       expect(e).toBeTruthy();
-      expect(e.errors.length).toBe(5);
+      expect(e.errors.length).toBe(4);
     }
   });
 });
@@ -72,9 +73,9 @@ describe('Manual Validation Individual Unit Tests', () => {
   });
 });
 
-describe('Individual Unit Tests', async () => {
+describe('Individual Unit Tests', () => {
   it('Error when missing Required Property', async () => {
-    let S = new Schemer({
+    const S = new Schemer({
       properties: {
         name: {},
       },
@@ -89,7 +90,7 @@ describe('Individual Unit Tests', async () => {
   });
 
   it('Error when data has an additional property', async () => {
-    let S = new Schemer({ additionalProperties: false });
+    const S = new Schemer({ additionalProperties: false });
     try {
       await S.validateAll({ extraProperty: 'extra' });
     } catch (e) {

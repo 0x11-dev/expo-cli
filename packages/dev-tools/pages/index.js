@@ -1,18 +1,15 @@
-import React from 'react';
+import createApolloClient from 'app/common/createApolloClient';
+import * as State from 'app/common/state';
+import { initStore } from 'app/common/store';
+import IndexPageErrors from 'app/components/IndexPageErrors';
+import ProjectManager from 'app/components/ProjectManager';
+import Root from 'app/components/Root';
+import withRedux from 'app/higher-order/withRedux';
 import gql from 'graphql-tag';
+import pTimeout from 'p-timeout';
+import React from 'react';
 import { ApolloProvider, Query } from 'react-apollo';
 import { SubscriptionClient } from 'subscriptions-transport-ws';
-
-import * as Constants from 'app/common/constants';
-import * as Strings from 'app/common/strings';
-import * as State from 'app/common/state';
-import createApolloClient from 'app/common/createApolloClient';
-import { initStore } from 'app/common/store';
-
-import withRedux from 'app/higher-order/withRedux';
-
-import Root from 'app/components/Root';
-import ProjectManager from 'app/components/ProjectManager';
 
 const MessageFragment = gql`
   fragment MessageFragment on Message {
@@ -78,6 +75,7 @@ const query = gql`
     processInfo {
       isAndroidSimulatorSupported
       isIosSimulatorSupported
+      webAppUrl
     }
     user {
       username
@@ -119,6 +117,7 @@ const projectPollQuery = gql`
     processInfo {
       isAndroidSimulatorSupported
       isIosSimulatorSupported
+      webAppUrl
     }
     user {
       username
@@ -179,6 +178,7 @@ class IndexPageContents extends React.Component {
   _handleChangeSectionCount = count => State.sectionCount({ count }, this.props);
   _handleUpdateState = options => State.update(options, this.props);
   _handleSimulatorClickIOS = () => State.openSimulator('IOS', this.props);
+  _handleStartWebClick = () => State.openBrowser(this.props);
   _handleSimulatorClickAndroid = () => State.openSimulator('ANDROID', this.props);
   _handleHostTypeClick = hostType => State.setHostType({ hostType }, this.props);
   _handlePublishProject = options => State.publishProject(options, this.props);
@@ -423,6 +423,7 @@ class IndexPageContents extends React.Component {
           onToggleProductionMode={this._handleToggleProductionMode}
           onHostTypeClick={this._handleHostTypeClick}
           onSimulatorClickIOS={this._handleSimulatorClickIOS}
+          onStartWebClick={this._handleStartWebClick}
           onSimulatorClickAndroid={this._handleSimulatorClickAndroid}
           onSectionDrag={this._handleSectionDrag}
           onSectionDismiss={this._handleSectionDismiss}
@@ -459,29 +460,41 @@ export default class IndexPage extends React.Component {
     super(props);
     this.state = {
       disconnected: false,
+      client: null,
     };
     this.unsubscribers = [];
-    if (process.browser) {
-      this.subscriptionClient = new SubscriptionClient(`ws://${window.location.host}/graphql`, {
-        reconnect: true,
-      });
-      this.client = createApolloClient(this.subscriptionClient);
-    }
   }
 
-  _handleConnected = () => this.setState({ disconnected: false });
-  _handleDisconnected = () => this.setState({ disconnected: true });
-
   componentDidMount() {
+    this.connect().catch(_ => this.setState({ disconnected: true }));
+  }
+
+  async connect() {
+    const response = await pTimeout(fetch('/dev-tools-info'), 10000);
+    if (!response.ok) {
+      throw new Error(`Dev Tools API returned an error: ${response.status}`);
+    }
+    const { webSocketGraphQLUrl, clientAuthenticationToken } = await response.json();
+    this.subscriptionClient = new SubscriptionClient(webSocketGraphQLUrl, {
+      reconnect: true,
+      connectionParams: {
+        clientAuthenticationToken,
+      },
+    });
     this.unsubscribers.push(
       this.subscriptionClient.on('connected', this._handleConnected),
       this.subscriptionClient.on('reconnected', this._handleConnected),
       this.subscriptionClient.on('disconnected', this._handleDisconnected)
     );
+    this.setState({ client: createApolloClient(this.subscriptionClient) });
   }
+
+  _handleConnected = () => this.setState({ disconnected: false });
+  _handleDisconnected = () => this.setState({ disconnected: true });
 
   componentWillUnmount() {
     this.unsubscribers.forEach(unsubscribe => unsubscribe());
+    this.unsubscribers = [];
   }
 
   render() {
@@ -490,14 +503,20 @@ export default class IndexPage extends React.Component {
       return null;
     }
 
+    if (!this.state.client) {
+      return null;
+    }
+
     return (
-      <ApolloProvider client={this.client}>
+      <ApolloProvider client={this.state.client}>
         <Query query={query}>
           {result => {
             if (!result.loading && !result.error) {
               return <IndexPageContents {...result} disconnected={this.state.disconnected} />;
+            } else if (result.error) {
+              return <IndexPageErrors error={result.error} />;
             } else {
-              // TODO(freiksenet): fix loading states
+              // TODO(wschurman): maybe add a loading state
               return null;
             }
           }}

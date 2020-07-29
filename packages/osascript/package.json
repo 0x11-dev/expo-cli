@@ -1,16 +1,18 @@
 {
   "name": "@expo/osascript",
-  "version": "1.9.0",
+  "version": "2.0.22",
   "description": "Tools for running an osascripts in Node",
   "main": "lib/index.js",
   "scripts": {
-    "build": "babel src --out-dir lib --source-maps",
-    "watch": "babel src --out-dir lib --source-maps --watch",
-    "prepare": "npm run build"
+    "watch": "tsc --watch",
+    "build": "tsc",
+    "prepare": "yarn run clean && yarn build",
+    "clean": "rimraf build ./tsconfig.tsbuildinfo"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/expo/osascript.git"
+    "url": "https://github.com/expo/expo-cli.git",
+    "directory": "packages/osascript"
   },
   "keywords": [
     "osascript",
@@ -19,25 +21,21 @@
     "spawn",
     "exec"
   ],
-  "author": "support@expo.io",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/expo/osascript/issues"
+    "url": "https://github.com/expo/expo-cli/issues"
   },
-  "homepage": "https://github.com/expo/osascript#readme",
+  "homepage": "https://github.com/expo/expo-cli/tree/master/packages/osascript#readme",
   "engines": {
-    "node": ">=6"
+    "node": "8.x.x || >=10.0.0"
   },
   "dependencies": {
-    "@expo/spawn-async": "^1.2.8",
-    "babel-runtime": "^6.23.0",
+    "@expo/spawn-async": "^1.5.0",
     "exec-async": "^2.2.0"
   },
   "devDependencies": {
-    "babel-cli": "^6.24.1",
-    "babel-plugin-transform-es2015-modules-commonjs": "^6.24.1",
-    "babel-plugin-transform-runtime": "^6.23.0",
-    "babel-preset-env": "^1.7.0"
+    "@expo/babel-preset-cli": "0.2.16",
+    "rimraf": "^3.0.2"
   },
   "files": [
     "lib/",

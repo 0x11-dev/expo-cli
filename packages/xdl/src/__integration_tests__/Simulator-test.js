@@ -1,12 +1,12 @@
-jasmine.DEFAULT_TIMEOUT_INTERVAL = 40000;
-
 import delayAsync from 'delay-async';
+
+jasmine.DEFAULT_TIMEOUT_INTERVAL = 40000;
 
 const xdl = require('../xdl');
 
 describe('simulator', () => {
   xit('opens and loads url in expo', async () => {
-    let Simulator = xdl.Simulator;
+    const Simulator = xdl.Simulator;
     if (!(await Simulator._isSimulatorInstalledAsync())) {
       throw new Error("Simulator isn't installed on this computer; can't run this test.");
     }
@@ -19,7 +19,7 @@ describe('simulator', () => {
     await delayAsync(1000); // 3 seconds
 
     // Open the simulator
-    await Simulator._openSimulatorAsync();
+    await Simulator._openAndBootSimulatorAsync();
 
     await delayAsync(9000); // 3 seconds
 

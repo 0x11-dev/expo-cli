@@ -1,59 +1,23 @@
-import forge from 'node-forge';
-import _ from 'lodash';
-import fs from 'fs-extra';
-import path from 'path';
-import glob from 'glob-promise';
-import plist from 'plist';
+import plist from '@expo/plist';
 import crypto from 'crypto';
+import fs from 'fs-extra';
+import { sync as globSync } from 'glob';
+import omit from 'lodash/omit';
+import minimatch from 'minimatch';
+import path from 'path';
 
 import { spawnAsyncThrowError } from './ExponentTools';
+import { findP12CertSerialNumber, getP12CertFingerprint } from './PKCS12Utils';
 
 async function ensureCertificateValid({ certPath, certPassword, teamID }) {
   const certData = await fs.readFile(certPath);
-  const fingerprint = _genP12CertFingerprint(certData, certPassword);
+  const fingerprint = getP12CertFingerprint(certData, certPassword);
   const identities = await _findIdentitiesByTeamID(teamID);
   const isValid = identities.indexOf(fingerprint) !== -1;
   if (!isValid) {
     throw new Error(`codesign ident not present in find-identity: ${fingerprint}\n${identities}`);
   }
   return fingerprint;
-}
-
-function _genP12CertFingerprint(p12Buffer, passwordRaw) {
-  const certData = _getCertData(p12Buffer, passwordRaw);
-  const certAsn1 = forge.pki.certificateToAsn1(certData);
-  const certDer = forge.asn1.toDer(certAsn1).getBytes();
-  return forge.md.sha1
-    .create()
-    .update(certDer)
-    .digest()
-    .toHex()
-    .toUpperCase();
-}
-
-function findP12CertSerialNumber(p12Buffer, passwordRaw) {
-  const certData = _getCertData(p12Buffer, passwordRaw);
-  const { serialNumber } = certData;
-  return serialNumber ? certData.serialNumber.replace(/^0+/, '').toUpperCase() : null;
-}
-
-function _getCertData(p12Buffer, passwordRaw) {
-  if (Buffer.isBuffer(p12Buffer)) {
-    p12Buffer = p12Buffer.toString('base64');
-  } else if (typeof p12Buffer !== 'string') {
-    throw new Error('_getCertData only takes strings and buffers.');
-  }
-
-  const password = String(passwordRaw || '');
-  const p12Der = forge.util.decode64(p12Buffer);
-  const p12Asn1 = forge.asn1.fromDer(p12Der);
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password);
-  const certBagType = forge.pki.oids.certBag;
-  const certData = _.get(p12.getBags({ bagType: certBagType }), [certBagType, 0, 'cert']);
-  if (!certData) {
-    throw new Error("_getCertData: couldn't find cert bag");
-  }
-  return certData;
 }
 
 async function _findIdentitiesByTeamID(teamID) {
@@ -84,18 +48,14 @@ function _ensureDeveloperCertificateIsValid(plistData, distCertFingerprint) {
 
 function _genDerCertFingerprint(certBase64) {
   const certBuffer = Buffer.from(certBase64, 'base64');
-  return crypto
-    .createHash('sha1')
-    .update(certBuffer)
-    .digest('hex')
-    .toUpperCase();
+  return crypto.createHash('sha1').update(certBuffer).digest('hex').toUpperCase();
 }
 
 function _ensureBundleIdentifierIsValid(plistData, expectedBundleIdentifier) {
   const actualApplicationIdentifier = plistData.Entitlements['application-identifier'];
   const actualBundleIdentifier = /\.(.+)/.exec(actualApplicationIdentifier)[1];
 
-  if (expectedBundleIdentifier !== actualBundleIdentifier) {
+  if (!minimatch(expectedBundleIdentifier, actualBundleIdentifier)) {
     throw new Error(
       `validateProvisioningProfile: wrong bundleIdentifier found in provisioning profile; expected: ${expectedBundleIdentifier}, found (in provisioning profile): ${actualBundleIdentifier}`
     );
@@ -112,7 +72,14 @@ const createExportOptionsPlist = ({
   provisioningProfileUUID,
   exportMethod,
   teamID,
-}) => `<?xml version="1.0" encoding="UTF-8"?>
+}) => {
+  const disableBitcodeCompiling = `<key>uploadBitcode</key>
+    <false/>
+    <key>compileBitcode</key>
+    <false/>
+    <key>uploadSymbols</key>
+    <false/>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
@@ -125,13 +92,15 @@ const createExportOptionsPlist = ({
       <key>${bundleIdentifier}</key>
       <string>${provisioningProfileUUID}</string>
     </dict>
+    ${exportMethod === 'ad-hoc' || exportMethod === 'enterprise' ? disableBitcodeCompiling : ''}
   </dict>
 </plist>`;
+};
 
 async function buildIPA(
   {
     ipaPath,
-    workspace,
+    workspacePath,
     archivePath,
     codeSignIdentity,
     exportOptionsPlistPath,
@@ -167,9 +136,7 @@ async function buildIPA(
         '-n',
         path.basename(ipaPath),
         '--workspace',
-        workspace,
-        '--scheme',
-        'ExpoKitApp',
+        workspacePath,
         '--archive_path',
         archivePath,
         '--skip_build_archive',
@@ -246,21 +213,22 @@ async function createEntitlementsFile({
 }) {
   const decodedProvisioningProfileEntitlements = plistData.Entitlements;
 
-  const entitlementsPattern = path.join(
-    archivePath,
-    'Products/Applications/ExpoKitApp.app/*.entitlements'
-  );
-  const entitlementsPaths = await glob(entitlementsPattern);
+  const entitlementsPaths = globSync('Products/Applications/*.app/*.entitlements', {
+    absolute: true,
+    cwd: archivePath,
+  });
   if (entitlementsPaths.length === 0) {
     throw new Error("Didn't find any generated entitlements file in archive.");
   } else if (entitlementsPaths.length !== 1) {
     throw new Error('Found more than one entitlements file.');
   }
   const archiveEntitlementsPath = entitlementsPaths[0];
-  const archiveEntitlementsRaw = await fs.readFile(archiveEntitlementsPath);
-  const archiveEntitlementsData = _.attempt(plist.parse, String(archiveEntitlementsRaw));
-  if (_.isError(archiveEntitlementsData)) {
-    throw new Error(`Error when parsing plist: ${archiveEntitlementsData.message}`);
+  const archiveEntitlementsRaw = await fs.readFile(archiveEntitlementsPath, 'utf8');
+  let archiveEntitlementsData;
+  try {
+    archiveEntitlementsData = plist.parse(archiveEntitlementsRaw);
+  } catch (error) {
+    throw new Error(`Error when parsing plist: ${error.message}`);
   }
 
   const entitlements = { ...decodedProvisioningProfileEntitlements };
@@ -271,10 +239,10 @@ async function createEntitlementsFile({
     }
   });
 
-  let generatedEntitlements = _.omit(entitlements, blacklistedEntitlementKeys);
+  let generatedEntitlements = omit(entitlements, blacklistedEntitlementKeys);
 
   if (!manifest.ios.usesIcloudStorage) {
-    generatedEntitlements = _.omit(generatedEntitlements, blacklistedEntitlementKeysWithoutICloud);
+    generatedEntitlements = omit(generatedEntitlements, blacklistedEntitlementKeysWithoutICloud);
   } else {
     const ubiquityKvKey = 'com.apple.developer.ubiquity-kvstore-identifier';
     if (generatedEntitlements[ubiquityKvKey]) {
@@ -284,14 +252,17 @@ async function createEntitlementsFile({
     generatedEntitlements['com.apple.developer.icloud-services'] = ['CloudDocuments'];
   }
   if (!manifest.ios.associatedDomains) {
-    generatedEntitlements = _.omit(generatedEntitlements, 'com.apple.developer.associated-domains');
+    generatedEntitlements = omit(generatedEntitlements, 'com.apple.developer.associated-domains');
+  }
+  if (!manifest.ios.usesAppleSignIn) {
+    generatedEntitlements = omit(generatedEntitlements, 'com.apple.developer.applesignin');
   }
   if (generatedEntitlements[icloudContainerEnvKey]) {
     const envs = generatedEntitlements[icloudContainerEnvKey].filter(i => i === 'Production');
     generatedEntitlements[icloudContainerEnvKey] = envs;
   }
 
-  const generatedEntitlementsPlistData = _.attempt(plist.build, generatedEntitlements);
+  const generatedEntitlementsPlistData = plist.build(generatedEntitlements);
   await fs.writeFile(generatedEntitlementsPath, generatedEntitlementsPlistData, {
     mode: 0o755,
   });
@@ -350,7 +321,10 @@ async function runFastlane({ teamID }, fastlaneArgs, loggerFields) {
   };
 
   await spawnAsyncThrowError('fastlane', fastlaneArgs, {
-    env: { ...process.env, ...fastlaneEnvVars },
+    env: {
+      ...process.env,
+      ...fastlaneEnvVars,
+    },
     pipeToLogger: true,
     dontShowStdout: false,
     loggerFields,

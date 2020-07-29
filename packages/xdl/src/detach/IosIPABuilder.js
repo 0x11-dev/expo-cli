@@ -1,24 +1,16 @@
-import _ from 'lodash';
+import plist from '@expo/plist';
+import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
-import plist from 'plist';
 
-import _logger from './Logger';
 import { spawnAsyncThrowError } from './ExponentTools';
 import * as IosCodeSigning from './IosCodeSigning';
+import _logger from './Logger';
 
 const logger = _logger.withFields({ buildPhase: 'building and signing IPA' });
 
 export default function createIPABuilder(buildParams) {
-  const { appUUID, keychainPath, bundleIdentifier, teamID, workingDir, manifest } = buildParams;
-  const workspace = path.join(
-    workingDir,
-    'shellAppWorkspaces',
-    'ios',
-    'default',
-    'ExpoKitApp.xcworkspace'
-  );
+  const { appUUID, keychainPath, bundleIdentifier, teamID, manifest, workspacePath } = buildParams;
   const appDir = path.join('/private/tmp/turtle', appUUID);
   const buildDir = path.join(appDir, 'build');
   const provisionDir = path.join(appDir, 'provisioning');
@@ -63,7 +55,7 @@ export default function createIPABuilder(buildParams) {
       const unsignedIpaPath = path.join(buildDir, `${appUUID}-unsigned.ipa`);
       const ipaBuilderArgs = {
         ipaPath: unsignedIpaPath,
-        workspace,
+        workspacePath,
         archivePath: outputPath,
         codeSignIdentity,
         exportOptionsPlistPath,
@@ -131,11 +123,11 @@ export default function createIPABuilder(buildParams) {
       }
     );
     const plistRaw = output.join('');
-    const plistData = _.attempt(plist.parse, plistRaw);
-    if (_.isError(plistData)) {
-      throw new Error(`Error when parsing plist: ${plistData.message}`);
+    try {
+      return plist.parse(plistRaw);
+    } catch (error) {
+      throw new Error(`Error when parsing plist: ${error.message}`);
     }
-    return plistData;
   }
 
   const getProvisioningProfileDirPath = () =>
