@@ -6,7 +6,7 @@ source 'https://rubygems.org'
 # the known prebuilt things. The version number here must match the
 # one on the prebuilt list
 gem 'unf_ext', '0.0.6'
-gem 'json', '1.8.2'
+gem 'json', '2.3.0'
 # Plain, non-native dependencies
 gem 'fastlane', '2.109.1'
 
